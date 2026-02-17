@@ -62,18 +62,48 @@ Before any trade, Optimus runs a multi-layer market assessment. Each layer produ
 | Breadth | % of S&P 500 stocks above 50-day MA > 40% | Confirms broad market participation, not just mega-cap driven |
 | Put/Call Ratio | 5-day smoothed P/C ratio | Extreme readings flag crowded positioning |
 | Credit Spreads (HY) | Investment-grade/high-yield spread not widening sharply | Early warning of systemic stress |
+| GLD Inverse Signal | GLD price behaviour relative to SPX | Cross-asset confirmation of risk sentiment (see 3.2.1) |
 
 **Configurable:** Each filter has an enable/disable toggle and adjustable threshold, stored as parameters per underlying.
 
+#### 3.2.1 GLD as Inverse Correlation Conviction Signal
+
+Gold (GLD) and equities (SPX) have a well-documented inverse relationship during stress events. When risk appetite collapses, capital flows from equities into gold. This makes GLD a valuable cross-asset confirmation signal for Optimus.
+
+**How it works:**
+
+GLD behaviour is scored and feeds into both the regime classification (Section 3.3) and the conviction scorer (Section 6.2). It does not act as a hard gate — it adjusts conviction.
+
+| GLD Condition | Interpretation | Effect on Conviction |
+|---------------|---------------|---------------------|
+| GLD falling while SPX recovering from BB touch | "Risk-on rotation" — capital leaving safe havens, returning to equities | **+0.2 conviction boost** — strong confirmation the SPX bounce is real |
+| GLD flat while SPX recovering | Neutral — no strong cross-asset signal | **No adjustment** |
+| GLD rising while SPX recovering | Ambiguous — gold bid persists despite equity bounce. Possible dead cat bounce or hedging demand still elevated | **-0.15 conviction reduction** — proceed with caution, reduce size |
+| GLD surging (> 1.5% daily) while SPX falling | Active flight to safety — crisis behaviour | **-0.3 conviction reduction** — likely suppresses entry via reduced size or regime override |
+
+**Implementation details:**
+
+- Track GLD 5-day rate of change relative to SPX 5-day rate of change
+- Compute a rolling 20-day correlation between GLD and SPX daily returns
+- When correlation is strongly negative (< -0.3), the inverse relationship is active and GLD signals carry more weight
+- When correlation is near zero or positive (unusual), reduce GLD signal weight — the historical relationship has broken down temporarily
+- GLD data is ingested via `self.add_equity("GLD")` in QuantConnect alongside SPX
+
+**Why GLD and not just VIX?**
+
+VIX measures implied volatility — it tells you what the options market expects. GLD measures actual capital flows into safe havens — it tells you what institutional money is doing. These are complementary signals. A VIX spike with no GLD bid suggests options market fear without real capital reallocation. A GLD surge with moderate VIX suggests quiet accumulation of hedges — potentially more ominous.
+
 ### 3.3 Regime Classification
 
-| Regime | Conditions | Action |
-|--------|-----------|--------|
-| **Bullish Calm** | VIX < 18, SPX > 200 EMA, breadth strong | Full allocation — ideal environment for put credit spreads |
-| **Elevated Vol** | VIX 18–25, trend intact | Full allocation — richer premium, still favourable |
-| **High Vol** | VIX 25–35, trend intact or recovering | Reduced allocation (50–75%). Wider spreads, more conservative delta |
-| **Crisis** | VIX > 35 or term structure in steep backwardation | Halt new entries. Manage existing positions only |
-| **Bear Trend** | SPX below 200 EMA, declining breadth | Halt new entries until trend recovers. Do not fight the trend |
+| Regime | Conditions | GLD Confirmation | Action |
+|--------|-----------|-----------------|--------|
+| **Bullish Calm** | VIX < 18, SPX > 200 EMA, breadth strong | GLD flat or declining (no safe-haven bid) | Full allocation — ideal environment for put credit spreads |
+| **Elevated Vol** | VIX 18–25, trend intact | GLD not surging | Full allocation — richer premium, still favourable |
+| **High Vol** | VIX 25–35, trend intact or recovering | GLD rising but not parabolic | Reduced allocation (50–75%). Wider spreads, more conservative delta |
+| **Crisis** | VIX > 35 or term structure in steep backwardation | GLD surging (> 1.5%/day) confirms flight to safety | Halt new entries. Manage existing positions only |
+| **Bear Trend** | SPX below 200 EMA, declining breadth | GLD in sustained uptrend (above its own 50 EMA) adds confirmation | Halt new entries until trend recovers. Do not fight the trend |
+
+**GLD as regime tiebreaker:** When other indicators give mixed signals (e.g., VIX at 24 — borderline Elevated/High Vol), GLD behaviour breaks the tie. If GLD is flat or declining, lean toward the less restrictive regime. If GLD is rising with momentum, lean toward the more restrictive regime.
 
 ---
 
@@ -111,9 +141,11 @@ If any confirmation fails, the signal is logged as "BB touch detected but confir
 
 ### 4.4 Entry Timing
 
-Once all gates pass, the trade is eligible for execution on the **next trading day's open** (not intraday). This avoids end-of-day volatility distortion and gives clean fills on SPX options at the open.
+Entry signals are evaluated at the prior day's close. If all gates pass, the trade becomes eligible for execution the following trading day.
 
-**Best practice:** Execute between 10:00–11:00 ET to avoid the opening auction noise and capture stable mid-market pricing on spreads.
+**Execution window:** The algorithm waits until **10:00 ET** (avoids the opening auction noise where spreads are wide and pricing is unstable), then continuously evaluates for execution throughout the remainder of the session. There is no closing cutoff — if conditions remain favourable at 10:00, 14:00, or 15:30, the trade can execute. The only constraint is the 10:00 ET earliest start.
+
+**Rationale:** With 45 DTE trades, a few hours of intraday timing makes negligible difference to the overall theta profile. Restricting to a narrow window would cause missed entries on days where spreads are temporarily wide in the morning but tighten in the afternoon. The 10:00 ET floor is sufficient to avoid opening auction distortion.
 
 ---
 
@@ -190,6 +222,7 @@ The conviction scorer adjusts position size between 0.5x and 1.5x of the base si
 | VIX Term Structure | Strong contango | Flat |
 | Trend Strength | SPX well above 200 EMA | Barely above |
 | BB Depth | Deep touch (> 2.5 std) | Shallow touch |
+| GLD Inverse Signal | GLD falling while SPX recovering (+0.2) | GLD rising during SPX bounce (-0.15 to -0.3) |
 | Recent Win Rate | Last 10 trades > 80% win | Last 10 trades < 60% win |
 
 ### 6.3 Portfolio-Level Constraints
@@ -398,6 +431,14 @@ All tuneable parameters are centralised for easy backtesting and optimisation.
 | `vix_high_vol_threshold` | 25 | 20–30 | VIX level that triggers high vol regime |
 | `vix_term_structure_threshold` | 1.05 | 1.00–1.10 | Front/second month ratio above which = backwardation warning |
 | `max_aggregate_delta` | -0.50 | -0.30 to -1.00 | Portfolio-level short delta limit |
+| `gld_roc_period` | 5 | 3–10 | GLD rate of change lookback (days) |
+| `gld_spx_correlation_period` | 20 | 10–30 | Rolling window for GLD/SPX return correlation |
+| `gld_surge_threshold` | 1.5 | 1.0–3.0 | GLD daily % move that signals flight to safety |
+| `gld_conviction_boost` | 0.20 | 0.10–0.30 | Conviction added when GLD confirms risk-on rotation |
+| `gld_conviction_penalty_mild` | -0.15 | -0.10 to -0.25 | Conviction reduction when GLD rising during SPX bounce |
+| `gld_conviction_penalty_severe` | -0.30 | -0.20 to -0.40 | Conviction reduction when GLD surging (flight to safety) |
+| `gld_trend_ema` | 50 | 20–100 | EMA period for GLD trend (used in Bear Trend regime confirmation) |
+| `execution_earliest_time` | 10:00 ET | 09:45–10:30 | Earliest time to execute trades (avoids opening auction) |
 
 ---
 
@@ -440,11 +481,13 @@ Put skew (the steepness of the IV smile) varies. When skew is steep, OTM puts ar
 
 **Enhancement:** Add a skew filter: only enter when the 25-delta put IV / ATM IV ratio exceeds its 30-day average.
 
-### 11.6 Intraday vs End-of-Day Execution
+### 11.6 Execution Window Best Practices
 
 SPX options are most liquid during the first 2 hours and last hour of trading. The mid-market spread is tightest during these windows.
 
-**Recommendation:** Evaluate entry signals at the previous day's close. Execute between 10:00–11:00 ET the following morning. This gives stable pricing and avoids the opening auction.
+**Approach:** Evaluate entry signals at the previous day's close. On the execution day, wait until 10:00 ET (past opening auction noise), then execute whenever spread pricing is acceptable throughout the remainder of the session. No narrow window — for 45 DTE trades, intraday timing has negligible impact on the theta profile, and a rigid window causes unnecessary missed entries.
+
+**Monitoring:** Log the bid/ask spread width at time of execution. If spread width exceeds 20% of the mid-market credit, flag it in diagnostics but do not block the trade (liquidity on SPX is generally sufficient).
 
 ### 11.7 Earnings Awareness
 
