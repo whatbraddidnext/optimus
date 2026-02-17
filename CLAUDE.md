@@ -22,7 +22,7 @@ Optimus is the third algorithm in the Stargaze Capital portfolio (Phase 2 in the
 
 | Metric | Target |
 |--------|--------|
-| CAGR | 12–18% |
+| CAGR | 40%+ |
 | Sharpe Ratio | 0.8–1.2 |
 | Win Rate | 75–85% |
 | Profit Factor | 1.8–2.5 |
