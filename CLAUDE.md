@@ -6,85 +6,117 @@ You are a quantitative analyst and trading algorithm designer specialising in op
 
 ## Project Context
 
-Optimus is the third algorithm in the Stargaze Capital portfolio (Phase 2 in the build sequence). It is a systematic options premium selling strategy that harvests the volatility risk premium — the persistent gap between implied and realised volatility. It provides steady theta income and is structurally uncorrelated with the other portfolio strategies (Megatron: gold breakout, Bumblebee: equity momentum, Bluestreak: FX carry).
+Optimus is a systematic futures options premium selling strategy that harvests the volatility risk premium across five uncorrelated futures underlyings (/ES, /GC, /CL, /ZB, /6E). It sells trend-adjusted iron condors and strangles, collecting theta decay from both sides. Phase 2 in the Stargaze Capital portfolio build sequence.
 
-## Strategy Overview
+Full design: `context/Optimus_HLD_v2.0.md`
 
-### Three Layers
+## Current Version
 
-1. **Layer 1 — Index Credit Spreads (60% of Optimus capital)**: Systematic premium collection on SPY, QQQ, IWM via put credit spreads and iron condors. Entry when IV Rank > 50%. Short strike at 0.16 delta (~84% OTM). DTE 30–45 days. Close at 50% max profit or 21 DTE (whichever first). Loss limit at 200% of premium received.
+**v2.0-MVP** — /ES Iron Condors Only
 
-2. **Layer 2 — VIX Mean Reversion Overlay (25%)**: Scale into elevated volatility (VIX > 25, risen > 30% in 5 days) with wide OTM put credit spreads on SPY. 45–60 DTE. Scale-in at VIX 25/30/35/40+. Wider loss limit (300% of premium).
+## Build Roadmap
 
-3. **Layer 3 — Earnings Premium Selling (15%, optional)**: Iron condors/strangles on liquid large-caps (AAPL, MSFT, AMZN, GOOGL, META) when IV Rank > 70% and earnings within 1–2 days. Close immediately after the earnings move. Max 5 positions per earnings season.
+### MVP (v2.0-MVP) — /ES Iron Condors ✅ CURRENT BUILD
 
-### Target Performance
+Single asset, single structure. Validate core profit engine.
 
-| Metric | Target |
-|--------|--------|
-| CAGR | 40%+ |
-| Sharpe Ratio | 0.8–1.2 |
-| Win Rate | 75–85% |
-| Profit Factor | 1.8–2.5 |
-| Max Drawdown | 15–25% |
-| Monthly Income | 1–1.5% of allocated capital |
+| Module | Purpose | Status |
+|--------|---------|--------|
+| config.py | /ES parameters, global defaults | |
+| indicators.py | IV Rank (52-week), ATR, ADX | |
+| trend_gradient.py | Trend score + delta skew mapping | |
+| regime_detector.py | RANGING/LOW_VOL/TRENDING/HIGH_VOL/CRISIS | |
+| options_chain_manager.py | Chain parsing, strike selection, liquidity | |
+| signal_engine.py | Multi-gate entry system | |
+| position_sizer.py | Max-loss IC sizing | |
+| risk_manager.py | Veto power, margin cap, loss halts | |
+| execution_manager.py | IC combo order submission | |
+| position_manager.py | Profit target, loss limit, time stop exits | |
+| trade_tracker.py | P&L logging, win/loss metrics | |
+| main.py | QC orchestration, warmup, event handlers | |
 
-### Position Sizing
+**Success criteria:** Win rate > 78%, correct IC construction, exit logic fires correctly, trend gradient measurably improves win rate vs symmetric baseline.
 
-- Size by **maximum loss**, not premium received
-- Max loss per trade: 2–3% of total portfolio equity
-- Total Optimus exposure (sum of max losses): never exceed 15% of total portfolio
-- Max concurrent: 3 positions per underlying, 8 total
+### Phase 2 — Multi-Asset Expansion
 
-### Key Risk Rules
+- Add /ZB (negatively correlated with /ES)
+- Add /GC with gold trend suppress filter
+- Add /CL with tighter parameters
+- Add /6E with FX trend suppress filter
+- Correlation alert (3+ underlyings in loss)
+- Per-asset crisis thresholds
 
-- Never hold to expiration — close at 21 DTE or profit target
-- Defined-risk structures only (spreads, not naked)
-- IV Rank entry filter prevents selling cheap vol
-- Circuit breaker: halt after 3 consecutive max losses
+### Phase 3 — Tier 2 Strangles
+
+- Strangle structure (Tier 2) with activation conditions
+- Notional-based sizing for undefined risk
+- Margin expansion protocol
+- VIX-gated tier selection
+
+### Phase 4 — Rolling & Defence
+
+- Roll trigger at delta threshold
+- Max 2 rolls per position
+- Inversion detection and handling
+- Roll P&L tracking
+
+### Phase 5 — Production Hardening
+
+- Failsafe / state persistence (Object Store)
+- Recovery & reconciliation on reconnect
+- Session manager with blackout calendar (FOMC, NFP, CPI)
+- Notifications (Telegram alerts, heartbeat, daily summary)
+- Diagnostics & attribution reporting
+
+### Phase 6 — Optimisation
+
+- Walk-forward validation (2yr in-sample, 6mo OOS)
+- Per-asset parameter sweeps
+- Trend scaling factor optimisation
+- Delta/profit-target sensitivity analysis
 
 ## Platform & Architecture
 
 ### QuantConnect (LEAN) + Interactive Brokers
 
 - Language: Python
-- Data provider: QuantConnect (NOT IBKR for Oanda CFDs)
+- Data provider: QuantConnect (futures + options chain data)
 - Brokerage: Interactive Brokers
-- UK trader constraints: US ETFs (SPY, QQQ, IWM) blocked by KID/PRIIPs. Use options on these underlyings where available, or futures alternatives (ES, MES)
+- Asset class: Futures Options (CME)
+- Margin: SPAN (risk-based)
 
-### File Structure
+### File Structure (v2.0)
 
 ```
 /Optimus/
-├── main.py                 # Core algorithm, event handlers (<64KB)
-├── signal_engine.py        # Entry/exit logic, IV rank, delta selection
-├── risk_manager.py         # Portfolio risk, circuit breakers, drawdown
-├── indicators.py           # IV rank, greeks, custom indicator wrappers
-├── regime_detector.py      # VIX regime classification
-├── position_sizer.py       # Max-loss sizing with drawdown scaling
-├── execution_manager.py    # Spread order management, fill tracking
-├── trade_tracker.py        # Trade logging, performance metrics
-├── session_manager.py      # Market hours, expiration calendar
-├── notifications.py        # Telegram/email alerts
-├── conviction_scorer.py    # Multi-factor conviction for sizing
-├── diagnostics.py          # Analytics, attribution
-└── /shared/                # Shared library across all Stargaze algos
-    ├── utils.py
-    ├── constants.py
-    └── sizing.py
+├── main.py                     # QC orchestration, event handlers (<64KB)
+├── config.py                   # ASSET_CONFIG and global parameters
+├── indicators.py               # IV Rank, ATR, ADX wrappers
+├── trend_gradient.py           # Trend score, delta skew mapping
+├── regime_detector.py          # Per-asset regime classification
+├── options_chain_manager.py    # Chain parsing, strike selection, liquidity
+├── signal_engine.py            # Multi-gate entry system
+├── position_sizer.py           # Max-loss sizing (IC), notional sizing (strangles)
+├── risk_manager.py             # Veto power, margin, loss halts
+├── execution_manager.py        # Order submission, fill tracking
+├── position_manager.py         # Exit logic, P&L tracking
+├── trade_tracker.py            # Trade logging, performance metrics
+├── context/
+│   ├── Optimus_HLD_v2.0.md
+│   ├── Trading_Algorithm_Design_Patterns_v2.docx
+│   └── stargaze portfolio strategy.pdf
+└── backtest_results/
 ```
 
 ### Platform Constraints
 
 - Main algorithm file must be < 64KB — extract helpers into modules
-- Use `QuoteBarConsolidator` for CFDs, `TradeBarConsolidator` for equities
-- Options chain: use `self.add_option()` with appropriate filters for strike/expiry
-- Warmup: always verify indicators are ready before trading; default to no-trade during warmup
+- Use `TradeBarConsolidator` for futures
+- Options chain: use `self.add_future_option()` with DTE/delta filters
+- Warmup: 252+ days for IV Rank (52-week lookback). Verify indicators ready before trading.
 - Log size: QC truncates at ~100KB; use condensed logging
 
 ## Development Principles
-
-### From the Design Patterns Guide
 
 1. **Simplicity over complexity** — only add features that demonstrably improve risk-adjusted returns
 2. **One change at a time** — never combine multiple modifications; test each in isolation
@@ -94,31 +126,21 @@ Optimus is the third algorithm in the Stargaze Capital portfolio (Phase 2 in the
 6. **ATR floor** — floor ATR at 50% of 100-bar average to prevent denominator collapse
 7. **Respect the compounding engine** — understand how trade count, position size, and win asymmetry interact exponentially
 
-### Versioning
+## Versioning
 
 - Format: `vMAJOR.MINOR.PATCH`
 - Never modify a working version — create a new one
 - Keep production branch separate from experiments
 - Document every version's purpose and results
 
-## Context Files
-
-Strategy documents are in `/context/`:
-- `stargaze portfolio strategy.pdf` — full portfolio strategy with all four algorithms
-- `Trading_Algorithm_Design_Patterns_v2.docx` — design patterns guide from Megatron development
-
-Backtest results go in `/backtest_results/`.
-
-## Key Risks to Monitor
-
-- **Tail risk**: sudden crashes produce losses many times typical profit. Defined-risk structures and strict sizing are non-negotiable
-- **Correlation with market crashes**: put spreads lose fast in crashes. Offset at portfolio level by Megatron (gold rallies in crises)
-- **QuantConnect options execution**: slippage on spreads can be significant. Stick to most liquid underlyings and strikes
-- **Assignment risk**: ITM short options near expiration. The 21 DTE time stop and loss limits prevent this
-- **Gamma risk**: accelerates near expiration. Never hold past 21 DTE
-
 ## Commands
 
 - `lean backtest Optimus` — run local backtest via LEAN CLI
 - `lean cloud backtest Optimus` — run on QuantConnect cloud
 - Results output to `/backtest_results/`
+
+## Improvement Log
+
+| Date | Version | Change | Result |
+|------|---------|--------|--------|
+| 2026-02-19 | v2.0-MVP | Clean slate build from v2.0 HLD. /ES IC only. | Pending backtest |
